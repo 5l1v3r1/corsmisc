@@ -27,9 +27,9 @@ type options struct {
 	all         bool
 	concurrency int
 	delay       int
-	header      string
 	method      string
 	noColor     bool
+	silent      bool
 	timeout     int
 	output      string
 	proxy       string
@@ -38,6 +38,7 @@ type options struct {
 }
 
 type result struct {
+	URL  string   `json:"url,omitempty"`
 	ACAO []string `json:"acao,omitempty"`
 	ACAC string   `json:"acac,omitempty"`
 }
@@ -53,7 +54,7 @@ func banner() {
   ___ ___  _ __ ___ _ __ ___ (_)___  ___
  / __/ _ \| '__/ __| '_ `+"`"+` _ \| / __|/ __|
 | (_| (_) | |  \__ \ | | | | | \__ \ (__
- \___\___/|_|  |___/_| |_| |_|_|___/\___| v1.1.0
+ \___\___/|_|  |___/_| |_| |_|_|___/\___| v1.2.0
 `).Bold())
 }
 
@@ -61,14 +62,14 @@ func init() {
 	flag.BoolVar(&o.all, "all", false, "")
 	flag.IntVar(&o.concurrency, "c", 20, "")
 	flag.IntVar(&o.delay, "d", 100, "")
-	flag.StringVar(&o.header, "H", "", "")
-	flag.StringVar(&o.method, "X", "GET", "")
-	flag.StringVar(&o.proxy, "x", "", "")
 	flag.BoolVar(&o.noColor, "nc", false, "")
 	flag.StringVar(&o.output, "o", "", "")
+	flag.BoolVar(&o.silent, "s", false, "")
 	flag.IntVar(&o.timeout, "timeout", 10, "")
 	flag.StringVar(&o.URLs, "urls", "", "")
 	flag.BoolVar(&o.verbose, "v", false, "")
+	flag.StringVar(&o.method, "X", "GET", "")
+	flag.StringVar(&o.proxy, "x", "", "")
 
 	flag.Usage = func() {
 		banner()
@@ -80,15 +81,15 @@ func init() {
 		h += "  -all            test all Origin's\n"
 		h += "  -c              concurrency level (default: 50)\n"
 		h += "  -d              delay between requests (default: 100ms)\n"
-		h += "  -H              header `\"Name: Value\"`, separated by colon\n"
 		h += "  -nc             no color mode\n"
 		h += "  -o              JSON output file\n"
+		h += "  -s              silent mode\n"
 		h += "  -timeout        HTTP request timeout (default: 10s)\n"
 		h += "  -urls           list of urls (use `-` to read stdin)\n"
 		h += "  -UA             HTTP user agent\n"
+		h += "  -v              verbose mode\n"
 		h += "  -X              HTTP method to use (default: GET)\n"
 		h += "  -x              HTTP Proxy URL\n"
-		h += "  -v              verbose mode\n"
 
 		fmt.Fprintf(os.Stderr, h)
 	}
@@ -101,6 +102,10 @@ func init() {
 func main() {
 	if o.URLs == "" {
 		os.Exit(1)
+	}
+
+	if !o.silent {
+		banner()
 	}
 
 	URLs := make(chan string, o.concurrency)
@@ -136,9 +141,9 @@ func main() {
 		}
 	}()
 
-	wg := new(sync.WaitGroup)
-	rslt := make(map[string]result)
-	delay := time.Duration(o.delay) * time.Millisecond
+	output := []result{}
+	mutex := &sync.Mutex{}
+	wg := &sync.WaitGroup{}
 
 	for i := 0; i < o.concurrency; i++ {
 		wg.Add(1)
@@ -169,6 +174,10 @@ func main() {
 
 		FOR_EVERY_URL:
 			for URL := range URLs {
+				var rslt result
+
+				rslt.URL = URL
+
 				parsedURL, err := gos.ParseURL(URL)
 				if err != nil {
 					if o.verbose {
@@ -222,12 +231,14 @@ func main() {
 			FOR_EVERY_ORIGIN:
 				for _, origin := range origins {
 					if !o.all {
-						if len(rslt[URL].ACAO) > 0 {
-							continue FOR_EVERY_URL
+						if len(rslt.ACAO) > 0 {
+							break FOR_EVERY_ORIGIN
 						}
 					}
 
-					time.Sleep(delay)
+					time.Sleep(
+						time.Duration(o.delay) * time.Millisecond,
+					)
 
 					req, err := http.NewRequest(o.method, URL, nil)
 					if err != nil {
@@ -239,7 +250,7 @@ func main() {
 					res, err := client.Do(req)
 					if err != nil {
 						if o.verbose {
-							fmt.Fprintf(os.Stderr, err.Error())
+							fmt.Fprintf(os.Stderr, err.Error()+"\n")
 						}
 
 						continue FOR_EVERY_ORIGIN
@@ -251,14 +262,23 @@ func main() {
 					}
 
 					acao := res.Header.Get("Access-Control-Allow-Origin")
-
 					if acao == origin {
-						ACAO := append(rslt[URL].ACAO, acao)
+						rslt.ACAO = append(rslt.ACAO, acao)
 
-						rslt[URL] = result{
-							ACAO: ACAO,
-							ACAC: res.Header.Get("Access-Control-Allow-Credentials"),
+						rslt.ACAC = res.Header.Get("Access-Control-Allow-Credentials")
+						if rslt.ACAC == "true" {
+							fmt.Println("[", au.BrightGreen("VULENERABLE").Bold(), "]", URL, "-H", au.BrightBlue("Origin: "+acao).Italic())
 						}
+					}
+				}
+
+				if rslt.ACAC == "true" {
+					mutex.Lock()
+					output = append(output, rslt)
+					mutex.Unlock()
+				} else {
+					if !o.silent {
+						fmt.Println("[", au.BrightRed("NOT VULENERABLE").Bold(), "]", rslt.URL)
 					}
 				}
 			}
@@ -268,13 +288,13 @@ func main() {
 	wg.Wait()
 
 	if o.output != "" {
-		if err := saveResults(o.output, rslt); err != nil {
+		if err := saveResults(o.output, output); err != nil {
 			log.Fatalln(err)
 		}
 	}
 }
 
-func saveResults(outputPath string, output map[string]result) error {
+func saveResults(outputPath string, output []result) error {
 	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
 		directory, filename := path.Split(outputPath)
 
