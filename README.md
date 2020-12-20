@@ -44,20 +44,24 @@ $ corsmisc -h
   ___ ___  _ __ ___ _ __ ___ (_)___  ___
  / __/ _ \| '__/ __| '_ ` _ \| / __|/ __|
 | (_| (_) | |  \__ \ | | | | | \__ \ (__
- \___\___/|_|  |___/_| |_| |_|_|___/\___| v1.0.0
+ \___\___/|_|  |___/_| |_| |_|_|___/\___| v1.1.0
 
 USAGE:
   corsmisc [OPTIONS]
 
 OPTIONS:
-   -c              number of concurrent threads. (default: 50)
-   -delay          delay between requests (ms) (default: 100)
-   -H              Header `"Name: Value"`, separated by colon. Multiple -H flags are accepted.
-   -nc             no color mode
-   -timeout        HTTP request timeout in seconds. (default: 10)
-   -urls           list of urls (use `-` to read stdin)
-   -UA             HTTP user agent
-   -X              HTTP method to use (default: GET)
+  -all            test all Origin's
+  -c              concurrency level (default: 50)
+  -d              delay between requests (default: 100ms)
+  -H              header `"Name: Value"`, separated by colon
+  -nc             no color mode
+  -o              JSON output file
+  -timeout        HTTP request timeout (default: 10s)
+  -urls           list of urls (use `-` to read stdin)
+  -UA             HTTP user agent
+  -X              HTTP method to use (default: GET)
+  -x              HTTP Proxy URL
+  -v              verbose mode
 ```
 
 ## Contribution

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,7 +12,10 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,13 +24,22 @@ import (
 )
 
 type options struct {
+	all         bool
 	concurrency int
 	delay       int
 	header      string
 	method      string
 	noColor     bool
 	timeout     int
+	output      string
+	proxy       string
 	URLs        string
+	verbose     bool
+}
+
+type result struct {
+	ACAO []string `json:"acao,omitempty"`
+	ACAC string   `json:"acac,omitempty"`
 }
 
 var (
@@ -40,17 +53,22 @@ func banner() {
   ___ ___  _ __ ___ _ __ ___ (_)___  ___
  / __/ _ \| '__/ __| '_ `+"`"+` _ \| / __|/ __|
 | (_| (_) | |  \__ \ | | | | | \__ \ (__
- \___\___/|_|  |___/_| |_| |_|_|___/\___| v1.0.0
+ \___\___/|_|  |___/_| |_| |_|_|___/\___| v1.1.0
 `).Bold())
 }
 
 func init() {
+	flag.BoolVar(&o.all, "all", false, "")
 	flag.IntVar(&o.concurrency, "c", 20, "")
+	flag.IntVar(&o.delay, "d", 100, "")
 	flag.StringVar(&o.header, "H", "", "")
 	flag.StringVar(&o.method, "X", "GET", "")
+	flag.StringVar(&o.proxy, "x", "", "")
 	flag.BoolVar(&o.noColor, "nc", false, "")
+	flag.StringVar(&o.output, "o", "", "")
 	flag.IntVar(&o.timeout, "timeout", 10, "")
 	flag.StringVar(&o.URLs, "urls", "", "")
+	flag.BoolVar(&o.verbose, "v", false, "")
 
 	flag.Usage = func() {
 		banner()
@@ -59,14 +77,18 @@ func init() {
 		h += "  corsmisc [OPTIONS]\n"
 
 		h += "\nOPTIONS:\n"
-		h += "   -c              number of concurrent threads. (default: 50)\n"
-		h += "   -delay          delay between requests (ms) (default: 100)\n"
-		h += "   -H              Header `\"Name: Value\"`, separated by colon. Multiple -H flags are accepted.\n"
-		h += "   -nc             no color mode\n"
-		h += "   -timeout        HTTP request timeout in seconds. (default: 10)\n"
-		h += "   -urls           list of urls (use `-` to read stdin)\n"
-		h += "   -UA             HTTP user agent\n"
-		h += "   -X              HTTP method to use (default: GET)\n"
+		h += "  -all            test all Origin's\n"
+		h += "  -c              concurrency level (default: 50)\n"
+		h += "  -d              delay between requests (default: 100ms)\n"
+		h += "  -H              header `\"Name: Value\"`, separated by colon\n"
+		h += "  -nc             no color mode\n"
+		h += "  -o              JSON output file\n"
+		h += "  -timeout        HTTP request timeout (default: 10s)\n"
+		h += "  -urls           list of urls (use `-` to read stdin)\n"
+		h += "  -UA             HTTP user agent\n"
+		h += "  -X              HTTP method to use (default: GET)\n"
+		h += "  -x              HTTP Proxy URL\n"
+		h += "  -v              verbose mode\n"
 
 		fmt.Fprintf(os.Stderr, h)
 	}
@@ -115,41 +137,45 @@ func main() {
 	}()
 
 	wg := new(sync.WaitGroup)
-
+	rslt := make(map[string]result)
 	delay := time.Duration(o.delay) * time.Millisecond
 
 	for i := 0; i < o.concurrency; i++ {
 		wg.Add(1)
 
-		time.Sleep(delay)
-
 		go func() {
 			defer wg.Done()
 
 			tr := &http.Transport{
-				MaxIdleConns:    30,
-				IdleConnTimeout: time.Second,
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 				DialContext: (&net.Dialer{
 					Timeout:   time.Duration(o.timeout) * time.Second,
 					KeepAlive: time.Second,
 				}).DialContext,
+				TLSClientConfig: &tls.Config{
+					InsecureSkipVerify: true,
+				},
 			}
 
-			re := func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
+			if o.proxy != "" {
+				if p, err := url.Parse(o.proxy); err == nil {
+					tr.Proxy = http.ProxyURL(p)
+				}
 			}
 
 			client := &http.Client{
-				Transport:     tr,
-				CheckRedirect: re,
-				Timeout:       time.Second * 10,
+				Transport: tr,
+				Timeout:   time.Duration(o.timeout) * time.Second,
 			}
 
+		FOR_EVERY_URL:
 			for URL := range URLs {
 				parsedURL, err := gos.ParseURL(URL)
 				if err != nil {
-					log.Fatalln(err)
+					if o.verbose {
+						fmt.Fprintf(os.Stderr, err.Error())
+					}
+
+					continue FOR_EVERY_URL
 				}
 
 				origins := []string{
@@ -178,22 +204,45 @@ func main() {
 					"https://repl.it",
 				}
 
-				specialChars := []string{"_", "-", "+", "$", "{", "}", "^", "%60", "!", "~", "`", ";", "|", "&", "(", ")", "*", "'", "\"", "=", "%0b"}
+				chars := []string{"_", "-", "+", "$", "{", "}", "^", "%60", "!", "~", "`", ";", "|", "&", "(", ")", "*", "'", "\"", "=", "%0b"}
 
-				for _, char := range specialChars {
-					origins = append(origins, fmt.Sprintf("%s://%s.%s%s.corsmisc.com", parsedURL.Scheme, parsedURL.DomainName, parsedURL.TLD, char))
+				for _, char := range chars {
+					origins = append(
+						origins,
+						fmt.Sprintf(
+							"%s://%s.%s%s.corsmisc.com",
+							parsedURL.Scheme,
+							parsedURL.DomainName,
+							parsedURL.TLD,
+							char,
+						),
+					)
 				}
 
+			FOR_EVERY_ORIGIN:
 				for _, origin := range origins {
+					if !o.all {
+						if len(rslt[URL].ACAO) > 0 {
+							continue FOR_EVERY_URL
+						}
+					}
+
+					time.Sleep(delay)
+
 					req, err := http.NewRequest(o.method, URL, nil)
 					if err != nil {
-						return
+						log.Fatalln(err)
 					}
+
 					req.Header.Set("Origin", origin)
 
 					res, err := client.Do(req)
 					if err != nil {
-						return
+						if o.verbose {
+							fmt.Fprintf(os.Stderr, err.Error())
+						}
+
+						continue FOR_EVERY_ORIGIN
 					}
 
 					if res != nil {
@@ -202,13 +251,63 @@ func main() {
 					}
 
 					acao := res.Header.Get("Access-Control-Allow-Origin")
-					acac := res.Header.Get("Access-Control-Allow-Credentials")
 
-					fmt.Println("[ACAO:" + acao + "] [ACAC:" + acac + "] - " + URL)
+					if acao == origin {
+						ACAO := append(rslt[URL].ACAO, acao)
+
+						rslt[URL] = result{
+							ACAO: ACAO,
+							ACAC: res.Header.Get("Access-Control-Allow-Credentials"),
+						}
+					}
 				}
 			}
 		}()
 	}
 
 	wg.Wait()
+
+	if o.output != "" {
+		if err := saveResults(o.output, rslt); err != nil {
+			log.Fatalln(err)
+		}
+	}
+}
+
+func saveResults(outputPath string, output map[string]result) error {
+	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
+		directory, filename := path.Split(outputPath)
+
+		if _, err := os.Stat(directory); os.IsNotExist(err) {
+			if directory != "" {
+				err = os.MkdirAll(directory, os.ModePerm)
+				if err != nil {
+					return err
+				}
+			}
+		}
+
+		if strings.ToLower(path.Ext(filename)) != ".json" {
+			outputPath = outputPath + ".json"
+		}
+	}
+
+	outputJSON, err := json.MarshalIndent(output, "", "\t")
+	if err != nil {
+		return err
+	}
+
+	outputFile, err := os.Create(outputPath)
+	if err != nil {
+		return err
+	}
+
+	defer outputFile.Close()
+
+	_, err = outputFile.WriteString(string(outputJSON))
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

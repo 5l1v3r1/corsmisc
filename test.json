@@ -1,0 +1,20 @@
+{
+	"https://signup.sixt.com": {
+		"acao": [
+			"*"
+		],
+		"acac": "true"
+	},
+	"https://teamscale-shadow.sixt.com": {
+		"acao": [
+			"*"
+		],
+		"acac": "true"
+	},
+	"https://teamscale.sixt.com": {
+		"acao": [
+			"*"
+		],
+		"acac": "true"
+	}
+}
